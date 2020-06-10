@@ -1,0 +1,552 @@
+---
+title: "Bike Prediction Demand"
+output: html_notebook
+---
+
+### Problem definition
+
+**Data:** Dataset contains three tables which has London census data, bike stations data and bike journeys data for one year is available. 
+
+**Problem:** The problem is to predict the number of bikes demand on one station in one hour time. For this reason considering one station and one hour, finding the number of bikes.The station is Spatial granularity where as hour is temporal granularity.
+
+**Goal:** The goal is to predict the number of bikes needed on one station in one hour time.
+
+**Research Questions**
+
+1. Is there any correlation between predictors and target variable?
+
+2. Is there any Multicollinearity exist in predictors?
+
+3. Which predictors have strong relationship with the target variable?
+
+### Preprocessing
+
+Importing data 
+```{r}
+journeys=read.csv("D:\\Data Science\\Applied Data Analytics Tools\\CW Week 12\\Submission instructions + data -- component 2-20191229\\data\\bike_journeys.csv")
+```
+
+```{r}
+stations=read.csv("D:\\Data Science\\Applied Data Analytics Tools\\CW Week 12\\Submission instructions + data -- component 2-20191229\\data\\bike_s.csv")
+census=read.csv("D:\\Data Science\\Applied Data Analytics Tools\\CW Week 12\\Submission instructions + data -- component 2-20191229\\data\\census.csv")
+
+```
+Getting first 5 rows of data to understand what kind of data is there.
+
+```{r}
+head(journeys)
+head(stations)
+head(census)
+```
+**Missing Values:**
+
+Before creating hypothesis, checking the data whether it has missing values or not using library Amelia. The plot below shows there is no missing values.
+```{r}
+library(Amelia)
+missmap(journeys)
+```
+
+```{r}
+missmap(stations)
+```
+```{r}
+missmap(census)
+```
+**Data Consistency**
+
+Checking the distinct values of the columns to check the consistency betwene all three data. 
+
+The London census data have 625 rows.
+
+The Stations data have 773 rows.
+
+In journeys data, 779 unqiue stations data is available. 
+
+```{r}
+length(unique(census$WardCode))
+```
+```{r}
+length(unique(stations$Station_ID))
+```
+```{r}
+length(unique(journeys$Start_Station_ID))
+```
+
+**Intersect()** function is giving common stations between journeys and stations data which are 771. We are losing 8 stations journey because stations data dont have that stations data. 
+
+```{r}
+length(unique(intersect(stations$Station_ID,journeys$Start_Station_ID)))
+```
+
+**Calculating distance**
+
+To join three tables, there should be a unique column on which tables can be joined.However, stations and census tables do not have any common column. For this purpose, the wardcode will be assigned to stations in station table. To assign the **wardcode** to stations, the minimum distance of each **station** with the centre of ward in **census** data has been calculated based on two coordinates point (lat, lon) using **distm()** function and **geosphere** library. 
+
+After applying **distm()**, distance matrix is returned. A row in the matrix represents one station distance with all columns which represents wards. The index number of the **ward** has been extracted from each row with minimum distance. This index values has been used to get WardCode from census data and assigned to current station in stations data in a new created column **WardCode**. 
+
+```{r}
+library(geosphere)
+x1=cbind((stations$Longitude), (stations$Latitude))
+x2=cbind((census$lon), (census$lat))
+
+# distance matrix
+distance1=distm(x1, x2,fun=distHaversine)
+
+# rowMins to find minimum distance and its index to a ward in a row.
+minimum1=matrixStats::rowMins(distance1)
+index1=(distance1==minimum1)%*% 1:ncol(distance1)
+
+##Assiging ward code with index to current station
+stations$WardCode=census$WardCode[index1]
+head(stations)
+```
+**Joning Three Datasets:**
+
+After getting **WardCode** column in stations table, stations and Census data has been joind on **WardCode** using **merge()** as left outer join to get all data from stations table.
+
+Journeys have column **Start_Station_ID** which has been used to perform right outer join with previously merged data **stations_census** to get all rows from journey table.
+
+```{r}
+#left outer join to get all stations data
+station_census=merge(stations,census, by="WardCode", all.x = TRUE)
+head(station_census)
+
+# Renamed Start_Station_ID to Station_ID in journey table
+names(journeys)[names(journeys) == "Start_Station_ID"] <- "Station_ID"
+head(journeys)
+
+#right outer join to get all journeys data
+s_j_census=merge(station_census,journeys, by="Station_ID",all.y =TRUE)
+head(s_j_census)
+```
+**Exploring the data** 
+
+* The results below shows that bike journeys exists for all locations central, east, south and west except North.
+
+* The journey data is only for two months August and september.
+
+* Journey Dates shows more journeys are made in the start of month to till 20th of the month(first 20 days.)
+
+* Hour of the journeys shows higher number of journeys made during peak hours (7am-9am) and (4pm-6pm)
+
+* Income score does not show any pattern as higher or lower income score does not affect the number of journeys as shows below.
+
+```{r}
+print("location")
+table(s_j_census$NESW)
+print("Start Month")
+table(s_j_census$Start_Month)
+print("Start date")
+table(s_j_census$Start_Date)
+print("Start Hour")
+table(s_j_census$Start_Hour)
+print("Income Score")
+table(s_j_census$IncomeScor)
+```
+### Hypothesis
+
+The problem is to predict the number of bikes demand on a station during one hour slot.
+
+**H1:** Higher bikes demand on stations which are in densely populated area.
+
+**H2:** The stations in poor areas have higher demand of bikes.
+
+**H3:** The number of bike demand is higher during peak hours on weekdays.
+
+**H4:** The higher the ratio of employed people in an area has higher bike demand. 
+
+**H5:** The higher the uk born people in an area, have higher demand for bikes.
+
+**H6:** There is higher demands of bikes on station in the start of month.
+
+# Metrics
+
+The following metrice have been created to support and falsify the hypothesis. 
+
+1. **Greenspace (H1):** It is the percentage of area containing greenspace. Lower percentage means the area is more densely populated.
+
+2. **IncomeScore (H2):** The proportion of area suffering low income. Higher value means the area is more poor. 
+
+3. **hour(H3):** The hour will be calculated after filtering  the peakhours (7am-9am and 4pm-6pm) and weekdays( Mon,Tue, Wed, Thur, Fri) from start_hour, Start_month, Start_year from journeys data. 
+
+4. **Ratio employed(H4):** The ratio of people who are employed and have a profession. Ratioemployed=NoEmployee/PopDen*AreaSqKm. Higher value means more people are employed.
+
+5. **ctf_h_ratio(H2):** NoCTFtoH/Nodwelling .The number of properties under council. To find out the poor area. 
+
+6. **No_owned_dwel_ratio(H2):** The ratio of properties owned by people in the area. NoOwnDwel/NoDwelling . To find the ratio of people not owning a property as poor areas.
+
+7. **uk_born(H5):** The ratio of people born in uk is calculated as uk_born=uk_born/(uk_born+non_uk_born).
+
+8. **Month_date(H6):** It will contain month start dates 1-20 date by filtering month column.
+
+
+```{r}
+final=data.frame(s_ID=s_j_census$Station_ID,year=s_j_census$Start_Year,date=s_j_census$Start_Date,month=s_j_census$Start_Month, hour=s_j_census$Start_Hour,Ratioemployed=s_j_census$NoEmployee/(s_j_census$PopDen*s_j_census$AreaSqKm),g_space=s_j_census$GrenSpace,ctf_h_ratio=s_j_census$NoCTFtoH/(s_j_census$NoDwelling),no_owned_dwel_ratio=s_j_census$NoOwndDwel/s_j_census$NoDwelling,uk_b=(s_j_census$BornUK/(s_j_census$BornUK+s_j_census$NotBornUK)),i_score=s_j_census$IncomeScor,Journeysid=s_j_census$Journey_ID)
+
+head(final)
+
+```
+**Weekday calculation**
+
+* Changed the format of **year** as added year 2017 in the data to replace 17. 
+
+* Combined column year, month and date to get data in format such as yyyy-mm-dd so that weekdays can be calculated and extracted.
+
+* **as.Date()** function has been used to create date format and added new column in the data.
+
+* Then day has been calculated using **format()** and **as.date()** function and new column added with weekdays. It gave Mon, Tue, Wed,Thu, Friday, Sat, Sun
+
+```{r}
+#changed year format from '17' to '2017'
+final$new_year=final$year[final$year<17] <- 2017
+final$year=NULL
+
+# merging year,month and date column 
+final$date_mon_year <- as.Date(with(final, paste(new_year, month, date,sep="-")), "%Y-%m-%d")
+
+# calculating days of the week from 'date'
+final$weekday <- format(as.Date(final$date_mon_year), "%a")
+head(final)
+
+```
+**Filtering days of month and weekdays** 
+
+* Used **dplyr** library and **filter()** function to filter days of the month and week 
+
+* first 20 days of month has been filtered as there is more journeys made in the start of month
+
+* Filterin weekdays
+
+* Filtered for peak hours which are 7am-9am and 4pm-6pm 
+
+```{r}
+library(dplyr)
+#filtering first 20 days of month
+target <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20)
+new=data.frame(filter(final, date %in% target))
+
+#filtering weekdays 
+target <- c("Mon","Tue","Wed","Thu","Fri")
+new1=data.frame(filter(new, weekday %in% target))
+
+# filtering peakhours
+target <- c(7,8,9,16,17,18)
+new2=data.frame(filter(new1, hour %in% target))
+head(new2)
+```
+**Grouping data**
+
+Grouped the data based on all metrics and counts the number of bikes journeys made in one hour on a particular day using **groupby**, **summarize** and **count** funtion. 
+
+```{r}
+# grouping and counting the number of bikes journeys made
+k=new2 %>% 
+group_by(date,hour,Ratioemployed,g_space,ctf_h_ratio,no_owned_dwel_ratio,uk_b,i_score,weekday) %>%
+summarise(journeysCount=n())
+k
+
+```
+```{r}
+for(unique_value in unique(k$weekday)){
+k[paste("weekday", unique_value, sep = ".")] <- ifelse(k$weekday == unique_value, 1, 0)
+}
+head(k)
+```
+
+**Removed Unneccessary columns**
+
+Removed unnecessary columns which are not metrics and displaying final metrices as below. 
+
+```{r}
+#deleting unecessary columns
+k$weekday=NULL
+k$weekday.Mon=NULL
+head(k)
+```
+**Checking Missing values**
+
+**Summary()** gives idea of the metrices whether normalized or no. It also displays whether we have missing values or not.
+
+```{r}
+summary(k)
+```
+**Removing missing values**
+
+Removing the NA's as we got after joing three tables. 
+
+```{r}
+library(Amelia)
+missmap(k,main="Missing Values vs Oberved")
+k=na.omit(k)
+summary(k)
+```
+**Normality Test**
+
+To check whether data is normally distributed or not. **ggplot2** library has been used to plot Q-Q plot and considered best case when distribution is with 45 degree line. As it can be clearly seen from below plots that most of the metrices points are not on line. There is need to perform transformation to make it normalized. 
+
+```{r}
+library(ggplot2)
+
+ggplot(k, aes(sample=date)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=hour)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=Ratioemployed)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=ctf_h_ratio)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=no_owned_dwel_ratio)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=uk_b)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=i_score)) + stat_qq() + stat_qq_line(col="blue")
+ggplot(k, aes(sample=journeysCount)) + stat_qq() + stat_qq_line(col="blue")
+
+```
+**Log Transformation**
+
+After normality test, log transformation have been applied on metrics.It also display Q-Q plot after applying transformation
+
+```{r}
+#log transformation
+k$Ratioemployed = log10(k$Ratioemployed)
+#plotting
+ggplot(k, aes(sample=Ratioemployed)) + stat_qq() + stat_qq_line(col="blue")
+k$ctf_h_ratio = log10(k$ctf_h_ratio)
+ggplot(k, aes(sample=ctf_h_ratio)) + stat_qq() + stat_qq_line(col="blue")
+k$no_owned_dwel_ratio = log10(k$no_owned_dwel_ratio)
+ggplot(k, aes(sample=no_owned_dwel_ratio)) + stat_qq() + stat_qq_line(col="blue")
+k$uk_b = log10(k$uk_b)
+ggplot(k, aes(sample=uk_b)) + stat_qq() + stat_qq_line(col="blue")
+k$i_score = log10(k$i_score)
+ggplot(k, aes(sample=i_score)) + stat_qq() + stat_qq_line(col="blue")
+k$journeysCount = log10(k$journeysCount)
+ggplot(k, aes(sample=journeysCount)) + stat_qq() + stat_qq_line(col="blue")
+```
+
+**Correlation Matrix** 
+
+* Finding Correlation matrix to check whether metrices are independet to each other or not. 
+
+* The plot below shows **ctf_h_ratio** have positive correlation with **no_owned_dwel_ratio** and **ratio_employed** because they both giving same information. So, will remove **ctf_h_ratio**.
+
+* Secondly, **income_score** have correlation with **uk_born**. Will remove income score
+
+* jouneysCount have correlation with **Ratio_employed**
+
+```{r}
+library(corrplot)
+cor1 = cor(k)
+corrplot.mixed(cor1, lower.col = "black", number.cex = .7)
+```
+
+
+
+```{r}
+k$Ratioemployed=NULL
+k$i_score=NULL
+k$no_owned_dwel_ratio=NULL #removed one day as applied one hot encoding
+library(corrplot)
+cor1 = cor(k)
+corrplot.mixed(cor1, lower.col = "black", number.cex = .7)
+```
+```{r}
+k
+```
+
+### Algorithm
+
+**Training and applying linear regression**
+
+* In this step, data has been splitted into 75% training and 25% testing data.
+
+* Then, data standardization have been performed on train and test data.
+
+* Linear regression model has been applied to predict the number of bikes demand for an hour on a station.
+
+```{r}
+sample_size<-floor(0.75*nrow(k))
+set.seed(123)
+#training and testing data splitting
+trainIdx<-sample(seq_len(nrow(k)),size=sample_size)
+train_s = k[trainIdx,]
+test_s = k[-trainIdx,]
+
+# data standardization
+train= as.data.table( scale(train_s) )
+test= as.data.table( scale(test_s) )
+
+# Linear regression model with journeysCount as target variable
+lr = lm(formula=journeysCount ~., data=train)
+train_preds = predict(lr, train)
+test_preds = predict(lr, test) #
+
+print( paste("R-square on train:", cor(train_preds, train$journeysCount)^2))
+
+```
+**R2 for Test/Train data** 
+
+* For train data R2 value is 0.063 which is very low which means the proposd model is very bad fit. For good fit, R2>0.70 . 
+
+* For test data, R2=0.062 which also show the proposed model is bad fit.
+
+```{r}
+print( paste("R-square on test:", cor(test_preds, test$journeysCount)^2))
+```
+
+### Residual Summary
+
+summary() gives the residual summary, The value of median should be zero. In the proposed model it is zero.The residuals is the difference between actual value and predicted value by the model.
+
+1. **Significant Coefficient**
+
+The summary also telling about each beta coefficient and which metric is significant or not.
+The sign *** next to metric show significancy of a metric. **hour**, **g_space**, **ctf_h_ratio**, **uk_b**, **tue** weekdays shows high significance as their p value is very low and <0.05.However, **date**,**month** and two weekdays (Wed, thur,Fri) are less significant as the value of p-value>0.05.
+
+2. **Residual Standard Error(RSE)**
+
+RSE value shows whether data fits the model perfectly or not. Closer to zero is best. But, in the proposed case value is near to 1 which means the data does not fit the model at all.
+
+3. **Adjusted R-squared**
+
+Multiple R-squared gives the proportion of variation explained by target variable in the model. It increases with increase in the number of predictors. So R-squared is adjusted to avoid this affect. However, the proposed model shows only around 6% variability have been explained by target variable in the model.
+
+4. **Null Hypothesis(F-statistics)**
+
+The low value of the F-statistic with low p-values <0.05 means null hypothesis is true. **Null Hypothesis** says predictors and target are independent of each other. However, the proposed model accepts null hypothesis.
+
+
+5. **p-value: < 2.2e-16**
+
+The p-value for almost all coefficients is <0.05 which means model is significant. The **Weekday.Wed**, **weekday.thu** and **Weekday.Fri** coefficients are less significant. 
+
+```{r}
+summary(lr)
+```
+
+**Testing prediction plot:**
+
+The plot below shows the difference between the actual and predicted values by model. All the points should lie around linear line. However, it shows random data there is not linear pattern.
+
+```{r}
+library(ggplot2)
+ggplot(test, aes(x=test$journeysCount, y=test_preds)) + geom_point() + geom_smooth(method = "lm")
+```
+
+**Requirements\Assumption for Linear Regression**
+
+1. **The Independece of Residuals:**
+
+The first plot shows whether correlation exists between residuals or not. The Residuals points should be random. However,the proposed model shows there is some pattern in residuals.
+
+2. **Normality of Residuals**
+
+The second plot is q-Q plot which means whether normal distribution exists between residuals. The residuals are almost following the straight line which shows the normal distribution in the residuals.
+
+3. **Homoscedasticity**
+
+This third spread location plot is test Homoscedasticity which means wether there is any correlation in the varaince of independent variable. The plot should equally and randomly spread across horizontal line. In this case, there is so much data spread across the line but not equally spreaded. 
+
+4. **Outlier Identification**
+
+This fourth is Leverage plot which helps to identify the outliers exist and should be removed before building model. But, the plot does not show any outlier in the proposed model. 
+
+
+```{r}
+plot(lr)
+```
+**RQ2: Is there any Multicollinearity exist in predictors?**
+
+The below code uses Variance Inflation Factor (vif) to check multicolinearity between independet varaiables. If the value is higher than 4 or 5. Then it means variables are correlated. The one of correlated predictors can be removed. The code shows all the metrics values are less than 4. So there is no need to remove any predictors.
+
+```{r}
+library(car)
+vif(lr) %>%    
+    knitr::kable()
+```
+### Optimizing Model
+
+**RQ3: Which predictors have strong relationship with the target variable?**
+
+**Feature selection/significant features**
+
+To find the predictors having strong relationship with target variable,the feature selection can be performed using backward, forward and mixed feature selection. 
+
+Here, the following code selects features by **p-value** from the previous model and using **mixed** feature selection method. The features from both methods have been compared which gives same features.
+
+```{r}
+##features selected from looking at p-value from previous model
+lm_sig <- lm(formula=journeysCount~hour+g_space+ctf_h_ratio+uk_b+weekday.Tue+weekday.Wed+weekday.Thu,data = train)
+##mixed feature selection using StepAIC function
+lm_step <- MASS::stepAIC(lr, direction = "both", trace = FALSE)
+print("feature selected on p-value")
+lm_sig$call
+print("features selected using mixed method")
+lm_step$call
+```
+**Whether relationship is linear or not?**
+
+The residual plot below is not linear perfectly.So combinations of significant metrics will be added as interaction to final model.
+
+```{r}
+library(car)
+residualPlot(lm_sig, type = "rstandard")
+```
+
+**Interactions to fix non-linearity problem**
+
+Optimizing the model by adding interaction of **peak hour** with **g-space** and **uk_born**.Because the uk born people who are employed might use more bikes during peak hours.
+
+```{r}
+lm_sig1 <- update(lm_sig, ~ .+hour*g_space+hour*uk_b+hour*ctf_h_ratio)
+residualPlot(lm_sig1, type = "rstandard", id=TRUE)
+```
+### Training/Testing of Final Model
+
+After feature selection and adding interactions in the model, trainned and tested the model again. The results below shows R-square value has increased which is now 0.08 for train and 0.07 for test as the model is able to explain varaiation in the data.
+
+```{r}
+train_preds = predict(lm_sig1, train)
+test_preds = predict(lm_sig1, test) #
+print( paste("R-square on train:", cor(train_preds, train$journeysCount)^2))
+print( paste("R-square on test:", cor(test_preds, test$journeysCount)^2))
+```
+**Summary**
+
+```{r}
+summary(lm_sig1)
+```
+
+### Results Interpretation
+
+**low R-sqaure and low p-value(significant coefficients)**
+
+The R-square value indicates the varaiation exist in the target variable explained by the model. Lower p-value indicates independent variable are significant for target variable.This combination in the model explains that predictors correlate with the outcome variable however, they fail to explain the variation in the target varaiable. R-square is spread of data around the linear line. It means the given dataset have higher variation in the data which gives low R-square value. The higher variation in the dataset cause model to have larger prediction intervals making it difficult to predict correctly. The domains where predicting human behavior it is difficult to get high R-square value. R-square is mostly less than 50%. 
+
+### Hypothesis 
+
+**H1:** Higher bikes demand on stations which are in densely populated area.(**False** **green space** shows negative value in the below bar plot.)
+
+**H2:** The stations in poor areas have higher demand of bikes.(**True** because **ctf_h_ratio** had positive correlation with **no_owned_dwel_ratio** and **income score**.
+
+**H3:** The number of bike demand is higher during peak hours on weekdays. (**Partially True** as the demand of bikes is high on **Tuesday** and **thursday** as compared to other days as can be seen in the plot. However, peak hours shows negative normalized value in the plot below)
+
+**H4:** The higher the ratio of employed people in an area has higher bike demand. (**True** as it had strong correlation with Journey count so removed before modelling)
+
+**H5:** The higher the uk born people in an area, have higher demand for bikes.(**False** as the bar plot shows negative normalized value)
+
+**H6:** The start of the month have higher demand(**False** because correlation matrix shows no correlation for **date** and negative value in the plot below)
+
+```{r}
+library(ggplot2)
+
+ggplot(, aes(x = names(lr$coefficients), y=lr$coefficients)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  xlab("coefficient") +
+  ylab("normalised value")
+```
+### Limitations
+
+1. The models shows mostly significant coefficients however, R-square value is low. R-square value depends on the the domain of data as here bike demand depends on human behavior which makes this models hard to predict bikes demand in practical. 
+
+2. Adding more combination of metrics resulted in higher accuracy which idicates more varaibles can be added to predict better. 
+
+3. There is need to change the parameters to see whether central London stations have more demand or not.
+
+4. According to R-sqaure, the dataset contains higher variation making it harder to predict correctly.
+
